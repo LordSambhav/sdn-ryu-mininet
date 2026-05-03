@@ -24,6 +24,7 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
+from ryu import utils
 
 
 class LearningSwitch(app_manager.RyuApp):
@@ -65,5 +66,29 @@ class LearningSwitch(app_manager.RyuApp):
         
         msg = ev.msg
         datapath = msg.datapath
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
+        dpid = datapath.id
+
+        if msg.reason == ofp.OFPR_NO_MATCH:
+            reason = 'NO MATCH'
+        elif msg.reason == ofp.OFPR_ACTION:
+            reason = 'ACTION'
+        elif msg.reason == ofp.OFPR_INVALID_TTL:
+            reason = 'INVALID TTL'
+        else:
+            reason = 'unknown'
+
+        self.logger.debug('OFPPacketIn received: '
+                        'buffer_id=%x total_len=%d reason=%s '
+                        'table_id=%d cookie=%d match=%s data=%s in_port=%s datapath_id=%s',
+                        msg.buffer_id, msg.total_len, reason,
+                        msg.table_id, msg.cookie, msg.match,
+                        utils.hex_array(msg.data), msg.match['in_port'], datapath.id)
+        # # This is the datapath ID print(datapath.id)
+        # print(vars(msg))
+        # # print(msg.match._fields2)
+        # print(msg.datapath_id)
 
         # Your controller implementation should start here

@@ -34,7 +34,6 @@ class NetworkTopo(Topo):
 
         Topo.__init__(self)
 
-        # Build the specified network topology here
     
     def build(self):
 
