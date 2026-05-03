@@ -25,6 +25,7 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu import utils
+from ryu.lib.packet import *
 
 
 class LearningSwitch(app_manager.RyuApp):
@@ -34,6 +35,7 @@ class LearningSwitch(app_manager.RyuApp):
         super(LearningSwitch, self).__init__(*args, **kwargs)
 
         # Here you can initialize the data structures you want to keep at the controller
+        self.mac_port_map = {} #dictionary to store mappings in the controller, the structure is dpid: {mac: port}
         
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -70,22 +72,46 @@ class LearningSwitch(app_manager.RyuApp):
         ofp_parser = datapath.ofproto_parser
         in_port = msg.match['in_port']
         dpid = datapath.id
+        #annotating dpid from simple integer datatype to it's 64bit representation in string
+        dpid = f"{dpid:016x}"
 
-        if msg.reason == ofp.OFPR_NO_MATCH:
-            reason = 'NO MATCH'
-        elif msg.reason == ofp.OFPR_ACTION:
-            reason = 'ACTION'
-        elif msg.reason == ofp.OFPR_INVALID_TTL:
-            reason = 'INVALID TTL'
-        else:
-            reason = 'unknown'
 
-        self.logger.debug('OFPPacketIn received: '
-                        'buffer_id=%x total_len=%d reason=%s '
-                        'table_id=%d cookie=%d match=%s data=%s in_port=%s datapath_id=%s',
-                        msg.buffer_id, msg.total_len, reason,
-                        msg.table_id, msg.cookie, msg.match,
-                        utils.hex_array(msg.data), msg.match['in_port'], datapath.id)
+        #analyse the packet
+        data_packet = packet.Packet(msg.data)
+        ethernet_protocol = data_packet.get_protocols(ethernet.ethernet)[0]
+
+        src_mac = ethernet_protocol.src
+        dest_mac = ethernet_protocol.dst
+
+        # print(f"The ethernet type is {ethernet_protocol.ethertype}, with source at {src_mac} and destination at {dest_mac}.")
+        self.logger.info(f"Packet inbound -- source: {src_mac} destination: {dest_mac} in_port: {in_port} datapath_id: {dpid} ethertype: {ethernet_protocol.ethertype}")
+        self.logger.info(f"Mac to Port Mapping: {self.mac_port_map}")
+
+        #using setdefault to initialize the mac port mapping dictionary with dpid key if not exists already
+        self.mac_port_map.setdefault(dpid, {})
+
+        #Checking if the source mac address is in the mac to port mapping, if not adding it in the dict.
+        if src_mac not in self.mac_port_map:
+            self.mac_port_map[dpid][src_mac] = in_port
+        
+
+
+        # if msg.reason == ofp.OFPR_NO_MATCH:
+        #     reason = 'NO MATCH'
+        # elif msg.reason == ofp.OFPR_ACTION:
+        #     reason = 'ACTION'
+        # elif msg.reason == ofp.OFPR_INVALID_TTL:
+        #     reason = 'INVALID TTL'
+        # else:
+        #     reason = 'unknown'
+
+        # self.logger.debug('OFPPacketIn received: '
+        #                 'buffer_id=%x total_len=%d reason=%s '
+        #                 'table_id=%d cookie=%d match=%s data=%s in_port=%s datapath_id=%s',
+        #                 msg.buffer_id, msg.total_len, reason,
+        #                 msg.table_id, msg.cookie, msg.match,
+        #                 utils.hex_array(msg.data), msg.match['in_port'], datapath.id)
+        # print(type(datapath.id))
         # # This is the datapath ID print(datapath.id)
         # print(vars(msg))
         # # print(msg.match._fields2)
