@@ -35,7 +35,7 @@ class LearningSwitch(app_manager.RyuApp):
         super(LearningSwitch, self).__init__(*args, **kwargs)
 
         # Here you can initialize the data structures you want to keep at the controller
-        self.mac_port_map = {} #dictionary to store mappings in the controller, the structure is dpid: {mac: port}
+        self.mac_port_map = {} #dictionary implementation of forwarding table to store mappings in the controller, the structure is dpid: {mac: port}
         
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -71,10 +71,10 @@ class LearningSwitch(app_manager.RyuApp):
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
         in_port = msg.match['in_port']
+        buffer_id = msg.buffer_id
         dpid = datapath.id
         #annotating dpid from simple integer datatype to it's 64bit representation in string
         dpid = f"{dpid:016x}"
-
 
         #analyse the packet
         data_packet = packet.Packet(msg.data)
@@ -84,7 +84,7 @@ class LearningSwitch(app_manager.RyuApp):
         dest_mac = ethernet_protocol.dst
 
         # print(f"The ethernet type is {ethernet_protocol.ethertype}, with source at {src_mac} and destination at {dest_mac}.")
-        self.logger.info(f"Packet inbound -- source: {src_mac} destination: {dest_mac} in_port: {in_port} datapath_id: {dpid} ethertype: {ethernet_protocol.ethertype}")
+        self.logger.info(f"Packet inbound -- source: {src_mac} destination: {dest_mac} in_port: {in_port} datapath_id: {dpid} ethertype: {ethernet_protocol.ethertype} buffer_id: {msg.buffer_id}")
         self.logger.info(f"Mac to Port Mapping: {self.mac_port_map}")
 
         #using setdefault to initialize the mac port mapping dictionary with dpid key if not exists already
@@ -94,6 +94,26 @@ class LearningSwitch(app_manager.RyuApp):
         if src_mac not in self.mac_port_map:
             self.mac_port_map[dpid][src_mac] = in_port
         
+        #Logic for checking if mac address mapping exists or not
+        if dest_mac in self.mac_port_map[dpid]:
+            out_port = self.mac_port_map[dpid][dest_mac]            
+        else:
+            out_port = ofp.OFPP_FLOOD
+
+        actions = [ofp_parser.OFPActionOutput(out_port)]
+        match = ofp_parser.OFPMatch(in_port=in_port, eth_dst=dest_mac, eth_src=src_mac)
+        self.add_flow(datapath, 1, match, actions)
+
+        
+        if buffer_id == ofp.OFP_NO_BUFFER:
+            data = None
+        else:
+            data = msg.data
+
+        self.logger.info(f"Response Controller to Switch: datapath={datapath}, buffer_id={buffer_id}, in_port={in_port}, actions={actions}, data={data}, out_port={out_port}")
+
+        #send the message
+        datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=buffer_id, in_port=in_port, actions=actions, data=data))
 
 
         # if msg.reason == ofp.OFPR_NO_MATCH:
