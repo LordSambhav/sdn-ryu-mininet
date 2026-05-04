@@ -104,8 +104,8 @@ class LearningSwitch(app_manager.RyuApp):
         match = ofp_parser.OFPMatch(in_port=in_port, eth_dst=dest_mac, eth_src=src_mac)
         self.add_flow(datapath, 1, match, actions)
 
-        
-        if buffer_id == ofp.OFP_NO_BUFFER:
+        #discarding data if it's in switch's buffer. 
+        if buffer_id != ofp.OFP_NO_BUFFER:
             data = None
         else:
             data = msg.data
