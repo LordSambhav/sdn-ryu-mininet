@@ -96,13 +96,14 @@ class LearningSwitch(app_manager.RyuApp):
         
         #Logic for checking if mac address mapping exists or not
         if dest_mac in self.mac_port_map[dpid]:
-            out_port = self.mac_port_map[dpid][dest_mac]            
+            out_port = self.mac_port_map[dpid][dest_mac] 
+            actions = [ofp_parser.OFPActionOutput(out_port)]    
+            match = ofp_parser.OFPMatch(in_port=in_port, eth_dst=dest_mac, eth_src=src_mac)
+            self.add_flow(datapath, 1, match, actions)       
         else:
             out_port = ofp.OFPP_FLOOD
+            actions = [ofp_parser.OFPActionOutput(out_port)]    
 
-        actions = [ofp_parser.OFPActionOutput(out_port)]
-        match = ofp_parser.OFPMatch(in_port=in_port, eth_dst=dest_mac, eth_src=src_mac)
-        self.add_flow(datapath, 1, match, actions)
 
         #discarding data if it's in switch's buffer. 
         if buffer_id != ofp.OFP_NO_BUFFER:
