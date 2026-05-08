@@ -152,26 +152,30 @@ class LearningSwitch(app_manager.RyuApp):
             self.logger.info(f"Router Packet: {vars(msg)}")
             self.logger.info(f"DPID: {datapath.id}")
             self.logger.info(f"Protocols: {data_packet.protocols}")
+            # self.logger.info(f"Protocols type: {any(isinstance(x, ipv6.ipv6) for x in data_packet.protocols)}")
+            # self.logger.info(f"Protocols type: {ipv6.ipv6 in [type(x) for x in data_packet.protocols]}")
             
             self.logger.info("-----------------------------------")
             self.logger.info(f"ARP Table: {self.arp_table}")
 
             
-            arp_proto = data_packet.get_protocols(arp.arp)[0]
-            # self.logger.info(f"APR_PROTO: {data_packet.get_protocols(arp.arp)}")
-            dst_ip = arp_proto.dst_ip
-            dst_mac = arp_proto.dst_mac
-            opcode = arp_proto.opcode
-            src_ip = arp_proto.src_ip
-            src_mac = arp_proto.src_mac
+            # arp.arp in [type(x) for x in data_packet.protocols] - logic for finding if arp in request
+            if arp.arp in [type(x) for x in data_packet.protocols]:
+                arp_proto = data_packet.get_protocols(arp.arp)[0]
+                # self.logger.info(f"APR_PROTO: {data_packet.get_protocols(arp.arp)}")
+                dst_ip = arp_proto.dst_ip
+                dst_mac = arp_proto.dst_mac
+                opcode = arp_proto.opcode
+                src_ip = arp_proto.src_ip
+                src_mac = arp_proto.src_mac
 
-            #self learning arp table
-            if src_ip not in self.arp_table:
-                self.arp_table[src_ip] = src_mac
+                #self learning arp table
+                if src_ip not in self.arp_table:
+                    self.arp_table[src_ip] = src_mac
 
-            if dst_ip in self.port_to_own_ip.values():
-                pass
-                #gateway logic here
+                if dst_ip in self.port_to_own_ip.values():
+                    pass
+                    #gateway logic here
 
             
             #because all the subnets are /24, writing a simple prefix extraction
