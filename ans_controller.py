@@ -24,6 +24,9 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
+from ryu import utils
+from ryu.lib.packet import *
+from ryu.lib.packet.ether_types import ETH_TYPE_IPV6
 
 
 class LearningSwitch(app_manager.RyuApp):
@@ -33,7 +36,22 @@ class LearningSwitch(app_manager.RyuApp):
         super(LearningSwitch, self).__init__(*args, **kwargs)
 
         # Here you can initialize the data structures you want to keep at the controller
+        self.mac_port_map = {} #dictionary implementation of forwarding table to store mappings in the controller, the structure is dpid: {mac: port}
         
+        # Router port MACs assumed by the controller
+        self.port_to_own_mac = {
+            1: "00:00:00:00:01:01",
+            2: "00:00:00:00:01:02",
+            3: "00:00:00:00:01:03"
+        }
+        # Router port (gateways) IP addresses assumed by the controller
+        self.port_to_own_ip = {
+        1: "10.0.1.1",
+        2: "10.0.2.1",
+        3: "192.168.1.1"
+        }
+        #self learning arp table
+        self.arp_table = {} #just ip -> mac entries
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -62,8 +80,122 @@ class LearningSwitch(app_manager.RyuApp):
     # Handle the packet_in event
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
-        
+       
         msg = ev.msg
         datapath = msg.datapath
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
+        buffer_id = msg.buffer_id
+        dpid = datapath.id
+        #annotating dpid from simple integer datatype to it's 64bit representation in string
+        dpid = f"{dpid:016x}"
+        data_packet = packet.Packet(msg.data)
+        ethernet_protocol = data_packet.get_protocols(ethernet.ethernet)[0]
+
+        #getting rid of ipv6 packet noise
+        if ethernet_protocol.ethertype == ETH_TYPE_IPV6:
+            self.logger.info(f"Dropping IPV6 packet {ethernet_protocol}")
+            return
+
+
+        #differentiating approach between switch and router handling via dpid, s3 being the router
+        if datapath.id in [1,2]:
+            
+            self.logger.info("*****************************")
+            self.logger.info("SWITCH TRIGGERED!")
+            self.logger.info(f"Switch Packet: {vars(msg)}")
+            self.logger.info(f"DPID: {datapath.id}")
+            self.logger.info("*****************************")
+            #switch logic here
+            
+            src_mac = ethernet_protocol.src
+            dest_mac = ethernet_protocol.dst
+
+            # print(f"The ethernet type is {ethernet_protocol.ethertype}, with source at {src_mac} and destination at {dest_mac}.")
+            self.logger.info(f"Packet inbound -- source: {src_mac} destination: {dest_mac} in_port: {in_port} datapath_id: {dpid} ethertype: {ethernet_protocol.ethertype} buffer_id: {msg.buffer_id}")
+            self.logger.info(f"Mac to Port Mapping: {self.mac_port_map}")
+
+            #using setdefault to initialize the mac port mapping dictionary with dpid key if not exists already
+            self.mac_port_map.setdefault(dpid, {})
+
+            #Checking if the source mac address is in the mac to port mapping, if not adding it in the dict.
+            if src_mac not in self.mac_port_map[dpid]:
+                self.mac_port_map[dpid][src_mac] = in_port
+            
+            #Logic for checking if mac address mapping exists or not
+            if dest_mac in self.mac_port_map[dpid]:
+                out_port = self.mac_port_map[dpid][dest_mac] 
+                actions = [ofp_parser.OFPActionOutput(out_port)]    
+                match = ofp_parser.OFPMatch(in_port=in_port, eth_dst=dest_mac, eth_src=src_mac)
+                self.add_flow(datapath, 1, match, actions)       
+            else:
+                out_port = ofp.OFPP_FLOOD
+                actions = [ofp_parser.OFPActionOutput(out_port)]    
+
+
+            #discarding data if it's in switch's buffer. 
+            if buffer_id != ofp.OFP_NO_BUFFER:
+                data = None
+            else:
+                data = msg.data
+
+            self.logger.info(f"Response Controller to Switch: datapath={datapath}, buffer_id={buffer_id}, in_port={in_port}, actions={actions}, data={data}, out_port={out_port}")
+
+            #send the message
+            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=buffer_id, in_port=in_port, actions=actions, data=data))
+
+        
+        elif datapath.id in [3]:
+            self.logger.info("-----------------------------------")
+            self.logger.info("ROUTER TRIGGERED!")
+            self.logger.info(f"Router Packet: {vars(msg)}")
+            self.logger.info(f"DPID: {datapath.id}")
+            self.logger.info(f"Protocols: {data_packet.protocols}")
+            
+            self.logger.info("-----------------------------------")
+            self.logger.info(f"ARP Table: {self.arp_table}")
+
+            
+            arp_proto = data_packet.get_protocols(arp.arp)[0]
+            # self.logger.info(f"APR_PROTO: {data_packet.get_protocols(arp.arp)}")
+            dst_ip = arp_proto.dst_ip
+            dst_mac = arp_proto.dst_mac
+            opcode = arp_proto.opcode
+            src_ip = arp_proto.src_ip
+            src_mac = arp_proto.src_mac
+
+            #self learning arp table
+            if src_ip not in self.arp_table:
+                self.arp_table[src_ip] = src_mac
+
+            if dst_ip in self.port_to_own_ip.values():
+                pass
+                #gateway logic here
+
+            
+            #because all the subnets are /24, writing a simple prefix extraction
+
+
+        # if msg.reason == ofp.OFPR_NO_MATCH:
+        #     reason = 'NO MATCH'
+        # elif msg.reason == ofp.OFPR_ACTION:
+        #     reason = 'ACTION'
+        # elif msg.reason == ofp.OFPR_INVALID_TTL:
+        #     reason = 'INVALID TTL'
+        # else:
+        #     reason = 'unknown'
+
+        # self.logger.debug('OFPPacketIn received: '
+        #                 'buffer_id=%x total_len=%d reason=%s '
+        #                 'table_id=%d cookie=%d match=%s data=%s in_port=%s datapath_id=%s',
+        #                 msg.buffer_id, msg.total_len, reason,
+        #                 msg.table_id, msg.cookie, msg.match,
+        #                 utils.hex_array(msg.data), msg.match['in_port'], datapath.id)
+        # print(type(datapath.id))
+        # # This is the datapath ID print(datapath.id)
+        # print(vars(msg))
+        # # print(msg.match._fields2)
+        # print(msg.datapath_id)
 
         # Your controller implementation should start here

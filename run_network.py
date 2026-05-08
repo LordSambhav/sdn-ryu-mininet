@@ -34,16 +34,15 @@ class NetworkTopo(Topo):
 
         Topo.__init__(self)
 
-        # Build the specified network topology here
     
     def build(self):
 
         #resources definition
         host_array = [
-            {"name":"h1", "ip":"10.0.1.2/24"},
-            {"name":"h2", "ip":"10.0.1.3/24"},
-            {"name":"ext", "ip":"192.168.1.123/24"},
-            {"name":"ser", "ip":"10.0.2.2/24"}
+            {"name":"h1", "ip":"10.0.1.2/24", "default_route":"10.0.1.1"},
+            {"name":"h2", "ip":"10.0.1.3/24", "default_route":"10.0.1.1"},
+            {"name":"ext", "ip":"192.168.1.123/24", "default_route":"192.168.1.1"},
+            {"name":"ser", "ip":"10.0.2.2/24", "default_route":"10.0.2.1"}
         ]
         switch_array = ["s1","s2","s3"]
         link_map = [
@@ -58,7 +57,7 @@ class NetworkTopo(Topo):
 
         #loops to add resources and links
         for host in host_array:
-            self.addHost(name=host["name"], ip=host["ip"])
+            self.addHost(name=host["name"], ip=host["ip"], defaultRoute=f"via {host['default_route']}")
         
         for switch_name in switch_array:
             self.addSwitch(name=switch_name, cls=OVSKernelSwitch)
