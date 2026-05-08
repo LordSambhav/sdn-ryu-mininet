@@ -26,6 +26,7 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu import utils
 from ryu.lib.packet import *
+from ryu.lib.packet.ether_types import ETH_TYPE_IPV6
 
 
 class LearningSwitch(app_manager.RyuApp):
@@ -90,6 +91,13 @@ class LearningSwitch(app_manager.RyuApp):
         #annotating dpid from simple integer datatype to it's 64bit representation in string
         dpid = f"{dpid:016x}"
         data_packet = packet.Packet(msg.data)
+        ethernet_protocol = data_packet.get_protocols(ethernet.ethernet)[0]
+
+        #getting rid of ipv6 packet noise
+        if ethernet_protocol.ethertype == ETH_TYPE_IPV6:
+            self.logger.info(f"Dropping IPV6 packet {ethernet_protocol}")
+            return
+
 
         #differentiating approach between switch and router handling via dpid, s3 being the router
         if datapath.id in [1,2]:
@@ -100,8 +108,7 @@ class LearningSwitch(app_manager.RyuApp):
             self.logger.info(f"DPID: {datapath.id}")
             self.logger.info("*****************************")
             #switch logic here
-            ethernet_protocol = data_packet.get_protocols(ethernet.ethernet)[0]
-
+            
             src_mac = ethernet_protocol.src
             dest_mac = ethernet_protocol.dst
 
@@ -144,6 +151,8 @@ class LearningSwitch(app_manager.RyuApp):
             self.logger.info("ROUTER TRIGGERED!")
             self.logger.info(f"Router Packet: {vars(msg)}")
             self.logger.info(f"DPID: {datapath.id}")
+            self.logger.info(f"Protocols: {data_packet.protocols}")
+            
             self.logger.info("-----------------------------------")
             self.logger.info(f"ARP Table: {self.arp_table}")
 
@@ -165,7 +174,8 @@ class LearningSwitch(app_manager.RyuApp):
                 #gateway logic here
 
             
-        
+            #because all the subnets are /24, writing a simple prefix extraction
+
 
         # if msg.reason == ofp.OFPR_NO_MATCH:
         #     reason = 'NO MATCH'
