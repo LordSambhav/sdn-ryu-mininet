@@ -26,6 +26,7 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu import utils
 from ryu.lib.packet import *
+from ryu.lib.packet.in_proto import IPPROTO_ICMP
 from ryu.lib.packet.ether_types import ETH_TYPE_IPV6, ETH_TYPE_ARP, ETH_TYPE_IP
 from ryu.lib.mac import BROADCAST_STR, DONTCARE_STR
 
@@ -203,6 +204,30 @@ class LearningSwitch(app_manager.RyuApp):
                 ipv4_proto = data_packet.get_protocols(ipv4.ipv4)[0]
                 dst_ip = ipv4_proto.dst
                 dst_ip_prefix = ".".join(dst_ip.split(".")[:3]) #this because every subnet is /24 in the task 
+                src_ip_prefix = ".".join(ipv4_proto.src.split(".")[:3])
+                blocked_icmp_prefix = [".".join(self.port_to_own_ip[3].split(".")[:3])]
+                server_subnet_prefix = [".".join(self.port_to_own_ip[2].split(".")[:3])]
+                    
+                if (dst_ip_prefix in blocked_icmp_prefix) != (src_ip_prefix in blocked_icmp_prefix):
+                    self.logger.info(f"================= Handling Suspicious Packet =================")
+                    self.logger.info(f"{src_ip_prefix} = SRC PREFIX & {dst_ip_prefix} = DST PREFIX")
+                    #send flow to drop packet
+                    if ipv4_proto.proto == IPPROTO_ICMP:
+                        self.logger.info(f"Dropping illegal ICMP")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src, ip_proto=IPPROTO_ICMP)
+                        actions = [] #drop
+                        self.add_flow(datapath, 101, match=match, actions=actions)
+                        return
+                    
+                    elif (dst_ip_prefix in server_subnet_prefix) or (src_ip_prefix in server_subnet_prefix):
+                        self.logger.info(f"Dropping Illegal Server Packet")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
+                        actions = [] #drop
+                        self.add_flow(datapath, 100, match=match, actions=actions) #giving firewall higher priority
+                        return
+
+                
+
 
                 for router_ip in self.port_to_own_ip.values():
                     router_prefix = ".".join(router_ip.split(".")[:3])
@@ -243,19 +268,19 @@ class LearningSwitch(app_manager.RyuApp):
                             data = msg.data
 
                         self.logger.info(f"Adding flow rule to the router...")
-                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip)
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
                         self.add_flow(datapath, 1, match=match, actions=actions)
 
                         self.logger.info(f"FORWARDING, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Forwarding packet...")
                         datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, in_port=in_port, buffer_id=msg.buffer_id, actions=actions, data=data))
-
+                        break
 
                     else:
                         pass
                         # self.logger.info(f"UNKNOWN SUBNET, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Dropping packet...")
                         # self.logger.info(f"Router's prefixes are: {self.port_to_own_ip.values()}")
                         # return
-
+                
                 # if dst_ip_prefix == 
             #work on when router's ip is pinged. drop the packet for now
                 return
