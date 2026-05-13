@@ -49,8 +49,8 @@ class NetworkTopo(Topo):
             {"node1": "h1", "node2": "s1"},
             {"node1": "h2", "node2": "s1"},
             {"node1": "s1", "node2": "s3"},
-            {"node1": "s3", "node2": "ext"},
             {"node1": "s3", "node2": "s2"},
+            {"node1": "s3", "node2": "ext"},
             {"node1": "s2", "node2": "ser"}
         ]
 

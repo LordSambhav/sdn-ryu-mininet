@@ -170,9 +170,8 @@ class LearningSwitch(app_manager.RyuApp):
                 src_mac = arp_proto.src_mac
 
 
-                #self learning arp table
-                if src_ip not in self.arp_table:
-                    self.arp_table[src_ip] = src_mac
+                #self learning arp table -- removed the if condition because ip assignments can change with time.
+                self.arp_table[src_ip] = src_mac
 
                 if dst_ip in self.port_to_own_ip.values():
                     port = next(k for k,v in self.port_to_own_ip.items() if v == dst_ip) 
@@ -180,27 +179,70 @@ class LearningSwitch(app_manager.RyuApp):
                     # self.logger.info(f"Sending response mac: {dst_mac_response} while src_ip is {src_ip}")
                     #draft mac response here
                     response_packet = packet.Packet()
-                    ethertype = ETH_TYPE_ARP
 
-                    
+                    eth_proto_response = ethernet.ethernet(dst=src_mac,src=src_mac_response, ethertype=ETH_TYPE_ARP)
                     arp_proto_response = arp.arp(opcode=arp.ARP_REPLY, src_mac=src_mac_response,
                                                  src_ip=dst_ip, dst_mac=src_mac, dst_ip=src_ip)
+                    response_packet.add_protocol(eth_proto_response)
                     response_packet.add_protocol(arp_proto_response)
                     
-                    # # flipping values for response arp packer
-                    # arp_proto_response.dst_ip = src_ip
-                    # arp_proto_response.dst_mac = dst_mac_response
-                    # arp_proto_response.opcode = arp.ARP_REPLY
-                    # arp_proto_response.src_ip = dst_ip
-                    # arp_proto_response.src_mac = src_mac_response
+                    #conversion to binary
+                    response_packet.serialize()
+
+                    #define actions
+                    out_port = in_port
+                    actions = [ofp_parser.OFPActionOutput(out_port)]
+                    #send final response
+                    self.logger.info(f"Sending ARP response... with these actions: {actions}")
+                    datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=response_packet.data))
 
 
-                    response_packet.add_protocol(arp.arp)
-                     
+            elif ipv4.ipv4 in [type(x) for x in data_packet.protocols]:
+                self.logger.info("IPV4 Packet received.. Reencapsulation for IPV4")
+                ipv4_proto = data_packet.get_protocols(ipv4.ipv4)[0]
+                dst_ip = ipv4_proto.dst
+                dst_ip_prefix = ".".join(dst_ip.split(".")[:3]) #this because every subnet is /24 in the task 
+
+                for router_ip in self.port_to_own_ip.values():
+                    router_prefix = ".".join(router_ip.split(".")[:3])
+                    if dst_ip_prefix == router_prefix:
+                        port = next(k for k,v in self.port_to_own_ip.items() if v == router_ip)
+                        reenc_src_mac = self.port_to_own_mac[port]
+                        out_port = next(k for k,v in self.port_to_own_ip.items() if v == router_ip)
+
+                        #two conditions here, one where the ip to mac is in the arp table, another when it's not
+                        if dst_ip in self.arp_table:
+                            #set destination mac here
+                            reenc_dst_mac = self.arp_table[dst_ip]
+                        else:
+                            #flood and drop packet
+                            self.logger.info("FLOOD HERE")
+
+                            return
+                        
+                        actions = []
+                        actions.append(ofp_parser.OFPActionSetField(eth_src=reenc_src_mac))
+                        actions.append(ofp_parser.OFPActionSetField(eth_dst=reenc_dst_mac))
+                        actions.append(ofp_parser.OFPActionOutput(port))
+
+                        if buffer_id != ofp.OFP_NO_BUFFER:
+                            data = None
+                        else:
+                            data = msg.data
+
+                        self.logger.info(f"FORWARDING, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Forwarding packet...")
+                        datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, in_port=in_port, buffer_id=msg.buffer_id, actions=actions, data=data))
 
 
-                elif dst_ip in self.arp_table:
-                    pass
+                    else:
+                        pass
+                        # self.logger.info(f"UNKNOWN SUBNET, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Dropping packet...")
+                        # self.logger.info(f"Router's prefixes are: {self.port_to_own_ip.values()}")
+                        # return
+
+                # if dst_ip_prefix == 
+            #work on when router's ip is pinged. drop the packet for now
+                return
                 # elif dst_ip 
                     #gateway logic here
 
