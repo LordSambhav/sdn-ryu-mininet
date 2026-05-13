@@ -26,7 +26,8 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu import utils
 from ryu.lib.packet import *
-from ryu.lib.packet.ether_types import ETH_TYPE_IPV6, ETH_TYPE_ARP
+from ryu.lib.packet.ether_types import ETH_TYPE_IPV6, ETH_TYPE_ARP, ETH_TYPE_IP
+from ryu.lib.mac import BROADCAST_STR, DONTCARE_STR
 
 
 class LearningSwitch(app_manager.RyuApp):
@@ -173,7 +174,7 @@ class LearningSwitch(app_manager.RyuApp):
                 #self learning arp table -- removed the if condition because ip assignments can change with time.
                 self.arp_table[src_ip] = src_mac
 
-                if dst_ip in self.port_to_own_ip.values():
+                if dst_ip in self.port_to_own_ip.values() and opcode == arp.ARP_REQUEST:
                     port = next(k for k,v in self.port_to_own_ip.items() if v == dst_ip) 
                     src_mac_response = self.port_to_own_mac[port]
                     # self.logger.info(f"Sending response mac: {dst_mac_response} while src_ip is {src_ip}")
@@ -217,7 +218,18 @@ class LearningSwitch(app_manager.RyuApp):
                         else:
                             #flood and drop packet
                             self.logger.info("FLOOD HERE")
-
+                            arp_req_packet = packet.Packet()
+                            arp_req_eth = ethernet.ethernet(dst=BROADCAST_STR,src=reenc_src_mac, ethertype=ETH_TYPE_ARP)
+                            arp_req_proto = arp.arp(opcode=arp.ARP_REQUEST, src_mac=reenc_src_mac,
+                                                        src_ip=router_ip, dst_mac=DONTCARE_STR, dst_ip=dst_ip)
+                            arp_req_packet.add_protocol(arp_req_eth)
+                            arp_req_packet.add_protocol(arp_req_proto)        
+                            arp_req_packet.serialize()
+                            #define actions
+                            actions = [ofp_parser.OFPActionOutput(out_port)]
+                            #send final response
+                            self.logger.info(f"Sending ARP request for {dst_ip} from {router_ip}... with these actions: {actions}")
+                            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=arp_req_packet.data))
                             return
                         
                         actions = []
@@ -229,6 +241,10 @@ class LearningSwitch(app_manager.RyuApp):
                             data = None
                         else:
                             data = msg.data
+
+                        self.logger.info(f"Adding flow rule to the router...")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip)
+                        self.add_flow(datapath, 1, match=match, actions=actions)
 
                         self.logger.info(f"FORWARDING, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Forwarding packet...")
                         datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, in_port=in_port, buffer_id=msg.buffer_id, actions=actions, data=data))
