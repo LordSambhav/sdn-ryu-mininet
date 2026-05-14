@@ -27,6 +27,7 @@ from ryu.ofproto import ofproto_v1_3
 from ryu import utils
 from ryu.lib.packet import *
 from ryu.lib.packet.in_proto import IPPROTO_ICMP
+from ryu.lib.packet.icmp import ICMP_ECHO_REPLY
 from ryu.lib.packet.ether_types import ETH_TYPE_IPV6, ETH_TYPE_ARP, ETH_TYPE_IP
 from ryu.lib.mac import BROADCAST_STR, DONTCARE_STR
 
@@ -204,10 +205,12 @@ class LearningSwitch(app_manager.RyuApp):
                 ipv4_proto = data_packet.get_protocols(ipv4.ipv4)[0]
                 dst_ip = ipv4_proto.dst
                 dst_ip_prefix = ".".join(dst_ip.split(".")[:3]) #this because every subnet is /24 in the task 
+                src_ip = ipv4_proto.src
                 src_ip_prefix = ".".join(ipv4_proto.src.split(".")[:3])
                 blocked_icmp_prefix = [".".join(self.port_to_own_ip[3].split(".")[:3])]
                 server_subnet_prefix = [".".join(self.port_to_own_ip[2].split(".")[:3])]
-                    
+
+                #firewall implementation    
                 if (dst_ip_prefix in blocked_icmp_prefix) != (src_ip_prefix in blocked_icmp_prefix):
                     self.logger.info(f"================= Handling Suspicious Packet =================")
                     self.logger.info(f"{src_ip_prefix} = SRC PREFIX & {dst_ip_prefix} = DST PREFIX")
@@ -225,7 +228,15 @@ class LearningSwitch(app_manager.RyuApp):
                         actions = [] #drop
                         self.add_flow(datapath, 100, match=match, actions=actions) #giving firewall higher priority
                         return
-
+                
+                #stopping other gateway access
+                if src_ip_prefix != dst_ip_prefix:
+                    if dst_ip in self.port_to_own_ip.values():
+                        self.logger.info(f"Illegal access to unauthorized gateway")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
+                        actions = [] #drop
+                        self.add_flow(datapath, 99, match=match, actions=actions) #giving firewall higher priority
+                        return
                 
 
 
@@ -236,10 +247,46 @@ class LearningSwitch(app_manager.RyuApp):
                         reenc_src_mac = self.port_to_own_mac[port]
                         out_port = next(k for k,v in self.port_to_own_ip.items() if v == router_ip)
 
-                        #two conditions here, one where the ip to mac is in the arp table, another when it's not
-                        if dst_ip in self.arp_table:
+                        #three conditions here, one where dst_ip is one of router's ips, one where the ip to mac is in the arp table, another when it's not
+                        if dst_ip == router_ip and ipv4_proto.proto == IPPROTO_ICMP:
+                            #icmp response to icmp req here
+                            icmp_proto = data_packet.get_protocols(icmp.icmp)[0]
+                            icmp_packet = packet.Packet()
+                            icmp_resp_eth = ethernet.ethernet(dst=ethernet_protocol.src, src=reenc_src_mac, ethertype=ETH_TYPE_IP)
+                            icmp_resp_ipv4 = ipv4.ipv4(dst=src_ip, src=router_ip, proto=IPPROTO_ICMP)
+                            icmp_resp_header = icmp.icmp(type_=ICMP_ECHO_REPLY, data=icmp_proto.data)
+                            icmp_packet.add_protocol(icmp_resp_eth)
+                            icmp_packet.add_protocol(icmp_resp_ipv4)
+                            icmp_packet.add_protocol(icmp_resp_header)
+                            icmp_packet.serialize()
+                            actions = [ofp_parser.OFPActionOutput(out_port)]
+                            #send final response
+                            self.logger.info(f"Sending ICMP response for {src_ip} from {router_ip}... with these actions: {actions}")
+                            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=icmp_packet.data))
+                            return
+
+
+                        elif dst_ip in self.arp_table:
                             #set destination mac here
                             reenc_dst_mac = self.arp_table[dst_ip]
+                            actions = []
+                            actions.append(ofp_parser.OFPActionSetField(eth_src=reenc_src_mac))
+                            actions.append(ofp_parser.OFPActionSetField(eth_dst=reenc_dst_mac))
+                            actions.append(ofp_parser.OFPActionOutput(port))
+
+                            if buffer_id != ofp.OFP_NO_BUFFER:
+                                data = None
+                            else:
+                                data = msg.data
+
+                            self.logger.info(f"Adding flow rule to the router...")
+                            match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
+                            self.add_flow(datapath, 1, match=match, actions=actions)
+
+                            self.logger.info(f"FORWARDING, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Forwarding packet...")
+                            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, in_port=in_port, buffer_id=msg.buffer_id, actions=actions, data=data))
+                            break
+
                         else:
                             #flood and drop packet
                             self.logger.info("FLOOD HERE")
@@ -257,23 +304,7 @@ class LearningSwitch(app_manager.RyuApp):
                             datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=arp_req_packet.data))
                             return
                         
-                        actions = []
-                        actions.append(ofp_parser.OFPActionSetField(eth_src=reenc_src_mac))
-                        actions.append(ofp_parser.OFPActionSetField(eth_dst=reenc_dst_mac))
-                        actions.append(ofp_parser.OFPActionOutput(port))
-
-                        if buffer_id != ofp.OFP_NO_BUFFER:
-                            data = None
-                        else:
-                            data = msg.data
-
-                        self.logger.info(f"Adding flow rule to the router...")
-                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
-                        self.add_flow(datapath, 1, match=match, actions=actions)
-
-                        self.logger.info(f"FORWARDING, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Forwarding packet...")
-                        datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, in_port=in_port, buffer_id=msg.buffer_id, actions=actions, data=data))
-                        break
+                          
 
                     else:
                         pass
@@ -281,8 +312,7 @@ class LearningSwitch(app_manager.RyuApp):
                         # self.logger.info(f"Router's prefixes are: {self.port_to_own_ip.values()}")
                         # return
                 
-                # if dst_ip_prefix == 
-            #work on when router's ip is pinged. drop the packet for now
+                    
                 return
                 # elif dst_ip 
                     #gateway logic here
