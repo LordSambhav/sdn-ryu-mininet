@@ -26,7 +26,10 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu import utils
 from ryu.lib.packet import *
-from ryu.lib.packet.ether_types import ETH_TYPE_IPV6
+from ryu.lib.packet.in_proto import IPPROTO_ICMP
+from ryu.lib.packet.icmp import ICMP_ECHO_REPLY
+from ryu.lib.packet.ether_types import ETH_TYPE_IPV6, ETH_TYPE_ARP, ETH_TYPE_IP
+from ryu.lib.mac import BROADCAST_STR, DONTCARE_STR
 
 
 class LearningSwitch(app_manager.RyuApp):
@@ -157,45 +160,146 @@ class LearningSwitch(app_manager.RyuApp):
             self.logger.info(f"ARP Table: {self.arp_table}")
 
             
-            arp_proto = data_packet.get_protocols(arp.arp)[0]
-            # self.logger.info(f"APR_PROTO: {data_packet.get_protocols(arp.arp)}")
-            dst_ip = arp_proto.dst_ip
-            dst_mac = arp_proto.dst_mac
-            opcode = arp_proto.opcode
-            src_ip = arp_proto.src_ip
-            src_mac = arp_proto.src_mac
+            # arp.arp in [type(x) for x in data_packet.protocols] - logic for finding if arp in request
+            if arp.arp in [type(x) for x in data_packet.protocols]:
+                arp_proto = data_packet.get_protocols(arp.arp)[0]
+                # self.logger.info(f"APR_PROTO: {data_packet.get_protocols(arp.arp)}")
+                dst_ip = arp_proto.dst_ip
+                dst_mac = arp_proto.dst_mac #not relevant in any logic yet
+                opcode = arp_proto.opcode #should be 2 when replying
+                src_ip = arp_proto.src_ip
+                src_mac = arp_proto.src_mac
 
-            #self learning arp table
-            if src_ip not in self.arp_table:
+
+                #self learning arp table -- removed the if condition because ip assignments can change with time.
                 self.arp_table[src_ip] = src_mac
 
-            if dst_ip in self.port_to_own_ip.values():
-                pass
-                #gateway logic here
+                if dst_ip in self.port_to_own_ip.values() and opcode == arp.ARP_REQUEST:
+                    port = next(k for k,v in self.port_to_own_ip.items() if v == dst_ip) 
+                    src_mac_response = self.port_to_own_mac[port]
+                    # self.logger.info(f"Sending response mac: {dst_mac_response} while src_ip is {src_ip}")
+                    #draft mac response here
+                    response_packet = packet.Packet()
 
-            
-            #because all the subnets are /24, writing a simple prefix extraction
+                    eth_proto_response = ethernet.ethernet(dst=src_mac,src=src_mac_response, ethertype=ETH_TYPE_ARP)
+                    arp_proto_response = arp.arp(opcode=arp.ARP_REPLY, src_mac=src_mac_response,
+                                                 src_ip=dst_ip, dst_mac=src_mac, dst_ip=src_ip)
+                    response_packet.add_protocol(eth_proto_response)
+                    response_packet.add_protocol(arp_proto_response)
+                    
+                    #conversion to binary
+                    response_packet.serialize()
+
+                    #define actions
+                    out_port = in_port
+                    actions = [ofp_parser.OFPActionOutput(out_port)]
+                    #send final response
+                    self.logger.info(f"Sending ARP response... with these actions: {actions}")
+                    datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=response_packet.data))
 
 
-        # if msg.reason == ofp.OFPR_NO_MATCH:
-        #     reason = 'NO MATCH'
-        # elif msg.reason == ofp.OFPR_ACTION:
-        #     reason = 'ACTION'
-        # elif msg.reason == ofp.OFPR_INVALID_TTL:
-        #     reason = 'INVALID TTL'
-        # else:
-        #     reason = 'unknown'
+            elif ipv4.ipv4 in [type(x) for x in data_packet.protocols]:
+                self.logger.info("IPV4 Packet received.. Reencapsulation for IPV4")
+                ipv4_proto = data_packet.get_protocols(ipv4.ipv4)[0]
+                dst_ip = ipv4_proto.dst
+                dst_ip_prefix = ".".join(dst_ip.split(".")[:3]) #this because every subnet is /24 in the task 
+                src_ip = ipv4_proto.src
+                src_ip_prefix = ".".join(ipv4_proto.src.split(".")[:3])
+                blocked_icmp_prefix = [".".join(self.port_to_own_ip[3].split(".")[:3])]
+                server_subnet_prefix = [".".join(self.port_to_own_ip[2].split(".")[:3])]
 
-        # self.logger.debug('OFPPacketIn received: '
-        #                 'buffer_id=%x total_len=%d reason=%s '
-        #                 'table_id=%d cookie=%d match=%s data=%s in_port=%s datapath_id=%s',
-        #                 msg.buffer_id, msg.total_len, reason,
-        #                 msg.table_id, msg.cookie, msg.match,
-        #                 utils.hex_array(msg.data), msg.match['in_port'], datapath.id)
-        # print(type(datapath.id))
-        # # This is the datapath ID print(datapath.id)
-        # print(vars(msg))
-        # # print(msg.match._fields2)
-        # print(msg.datapath_id)
+                #firewall implementation    
+                if (dst_ip_prefix in blocked_icmp_prefix) != (src_ip_prefix in blocked_icmp_prefix):
+                    self.logger.info(f"================= Handling Suspicious Packet =================")
+                    self.logger.info(f"{src_ip_prefix} = SRC PREFIX & {dst_ip_prefix} = DST PREFIX")
+                    #send flow to drop packet
+                    if ipv4_proto.proto == IPPROTO_ICMP:
+                        self.logger.info(f"Dropping illegal ICMP")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src, ip_proto=IPPROTO_ICMP)
+                        actions = [] #drop
+                        self.add_flow(datapath, 101, match=match, actions=actions)
+                        return
+                    
+                    elif (dst_ip_prefix in server_subnet_prefix) or (src_ip_prefix in server_subnet_prefix):
+                        self.logger.info(f"Dropping Illegal Server Packet")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
+                        actions = [] #drop
+                        self.add_flow(datapath, 100, match=match, actions=actions) #giving firewall higher priority
+                        return
+                
+                #stopping other gateway access
+                if src_ip_prefix != dst_ip_prefix:
+                    if dst_ip in self.port_to_own_ip.values():
+                        self.logger.info(f"Illegal access to unauthorized gateway")
+                        match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
+                        actions = [] #drop
+                        self.add_flow(datapath, 99, match=match, actions=actions) #giving firewall higher priority
+                        return
+                
 
-        # Your controller implementation should start here
+
+                for router_ip in self.port_to_own_ip.values():
+                    router_prefix = ".".join(router_ip.split(".")[:3])
+                    if dst_ip_prefix == router_prefix:
+                        port = next(k for k,v in self.port_to_own_ip.items() if v == router_ip)
+                        reenc_src_mac = self.port_to_own_mac[port]
+                        out_port = next(k for k,v in self.port_to_own_ip.items() if v == router_ip)
+
+                        #three conditions here, one where dst_ip is one of router's ips, one where the ip to mac is in the arp table, another when it's not
+                        if dst_ip == router_ip and ipv4_proto.proto == IPPROTO_ICMP:
+                            #icmp response to icmp req here
+                            icmp_proto = data_packet.get_protocols(icmp.icmp)[0]
+                            icmp_packet = packet.Packet()
+                            icmp_resp_eth = ethernet.ethernet(dst=ethernet_protocol.src, src=reenc_src_mac, ethertype=ETH_TYPE_IP)
+                            icmp_resp_ipv4 = ipv4.ipv4(dst=src_ip, src=router_ip, proto=IPPROTO_ICMP)
+                            icmp_resp_header = icmp.icmp(type_=ICMP_ECHO_REPLY, data=icmp_proto.data)
+                            icmp_packet.add_protocol(icmp_resp_eth)
+                            icmp_packet.add_protocol(icmp_resp_ipv4)
+                            icmp_packet.add_protocol(icmp_resp_header)
+                            icmp_packet.serialize()
+                            actions = [ofp_parser.OFPActionOutput(out_port)]
+                            #send final response
+                            self.logger.info(f"Sending ICMP response for {src_ip} from {router_ip}... with these actions: {actions}")
+                            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=icmp_packet.data))
+                            return
+
+
+                        elif dst_ip in self.arp_table:
+                            #set destination mac here
+                            reenc_dst_mac = self.arp_table[dst_ip]
+                            actions = []
+                            actions.append(ofp_parser.OFPActionSetField(eth_src=reenc_src_mac))
+                            actions.append(ofp_parser.OFPActionSetField(eth_dst=reenc_dst_mac))
+                            actions.append(ofp_parser.OFPActionOutput(port))
+
+                            if buffer_id != ofp.OFP_NO_BUFFER:
+                                data = None
+                            else:
+                                data = msg.data
+
+                            self.logger.info(f"Adding flow rule to the router...")
+                            match = ofp_parser.OFPMatch(eth_type=ETH_TYPE_IP, ipv4_dst=dst_ip, ipv4_src=ipv4_proto.src)
+                            self.add_flow(datapath, 1, match=match, actions=actions)
+
+                            self.logger.info(f"FORWARDING, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Forwarding packet...")
+                            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, in_port=in_port, buffer_id=msg.buffer_id, actions=actions, data=data))
+                            break
+
+                        else:
+                            #flood and drop packet
+                            self.logger.info("FLOOD HERE")
+                            arp_req_packet = packet.Packet()
+                            arp_req_eth = ethernet.ethernet(dst=BROADCAST_STR,src=reenc_src_mac, ethertype=ETH_TYPE_ARP)
+                            arp_req_proto = arp.arp(opcode=arp.ARP_REQUEST, src_mac=reenc_src_mac,
+                                                        src_ip=router_ip, dst_mac=DONTCARE_STR, dst_ip=dst_ip)
+                            arp_req_packet.add_protocol(arp_req_eth)
+                            arp_req_packet.add_protocol(arp_req_proto)        
+                            arp_req_packet.serialize()
+                            #define actions
+                            actions = [ofp_parser.OFPActionOutput(out_port)]
+                            #send final response
+                            self.logger.info(f"Sending ARP request for {dst_ip} from {router_ip}... with these actions: {actions}")
+                            datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=arp_req_packet.data))
+                            return            
+                    
+                return
