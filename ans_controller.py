@@ -155,8 +155,6 @@ class LearningSwitch(app_manager.RyuApp):
             self.logger.info(f"Router Packet: {vars(msg)}")
             self.logger.info(f"DPID: {datapath.id}")
             self.logger.info(f"Protocols: {data_packet.protocols}")
-            # self.logger.info(f"Protocols type: {any(isinstance(x, ipv6.ipv6) for x in data_packet.protocols)}")
-            # self.logger.info(f"Protocols type: {ipv6.ipv6 in [type(x) for x in data_packet.protocols]}")
             
             self.logger.info("-----------------------------------")
             self.logger.info(f"ARP Table: {self.arp_table}")
@@ -302,44 +300,6 @@ class LearningSwitch(app_manager.RyuApp):
                             #send final response
                             self.logger.info(f"Sending ARP request for {dst_ip} from {router_ip}... with these actions: {actions}")
                             datapath.send_msg(ofp_parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=arp_req_packet.data))
-                            return
-                        
-                          
-
-                    else:
-                        pass
-                        # self.logger.info(f"UNKNOWN SUBNET, router_prefix = {router_prefix}, dst_prefix = {dst_ip_prefix} : Dropping packet...")
-                        # self.logger.info(f"Router's prefixes are: {self.port_to_own_ip.values()}")
-                        # return
-                
+                            return            
                     
                 return
-                # elif dst_ip 
-                    #gateway logic here
-
-            
-            #because all the subnets are /24, writing a simple prefix extraction
-
-
-        # if msg.reason == ofp.OFPR_NO_MATCH:
-        #     reason = 'NO MATCH'
-        # elif msg.reason == ofp.OFPR_ACTION:
-        #     reason = 'ACTION'
-        # elif msg.reason == ofp.OFPR_INVALID_TTL:
-        #     reason = 'INVALID TTL'
-        # else:
-        #     reason = 'unknown'
-
-        # self.logger.debug('OFPPacketIn received: '
-        #                 'buffer_id=%x total_len=%d reason=%s '
-        #                 'table_id=%d cookie=%d match=%s data=%s in_port=%s datapath_id=%s',
-        #                 msg.buffer_id, msg.total_len, reason,
-        #                 msg.table_id, msg.cookie, msg.match,
-        #                 utils.hex_array(msg.data), msg.match['in_port'], datapath.id)
-        # print(type(datapath.id))
-        # # This is the datapath ID print(datapath.id)
-        # print(vars(msg))
-        # # print(msg.match._fields2)
-        # print(msg.datapath_id)
-
-        # Your controller implementation should start here
